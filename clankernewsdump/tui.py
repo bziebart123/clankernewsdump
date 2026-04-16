@@ -1,13 +1,4 @@
-"""Interactive Textual TUI for browsing the news dump.
-
-Features:
-- Boots instantly from DB cache, scrapes in background
-- Auto-summarizes all items
-- Subscribe to sources with `f`
-- Date range picker with Apply + Re-scrape buttons
-- Clean preview pane (title, source, summary only)
-- Enter on an item opens it in browser
-"""
+"""Interactive Textual TUI for browsing the news dump."""
 from __future__ import annotations
 
 import webbrowser
@@ -19,7 +10,7 @@ from rich.text import Text as RichText
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Button, Footer, Header, Input, Label, ListItem, ListView, Rule, Static
+from textual.widgets import Button, Footer, Header, Label, ListItem, ListView, Rule, Static
 
 from . import cache as db
 from .fetchers import fetch_incrementally
@@ -57,25 +48,41 @@ def _esc(s: str) -> str:
 
 class CategoryItem(ListItem):
     def __init__(self, cat: str, count: int) -> None:
-        color = CATEGORY_COLORS.get(cat, "white")
-        label_text = CATEGORY_LABELS.get(cat, cat)
-        label = f"[{color}]{label_text}[/]  [dim]({count})[/]"
-        super().__init__(Label(label))
         self.cat = cat
+        super().__init__()
+        self._cat_color = CATEGORY_COLORS.get(cat, "white")
+        self._cat_label = CATEGORY_LABELS.get(cat, cat)
+        self._cat_count = count
+
+    def compose(self) -> ComposeResult:
+        yield Label(f"[{self._cat_color}]{self._cat_label}[/]  [dim]({self._cat_count})[/]")
 
 
 class NewsItem(ListItem):
-    def __init__(self, item: Item, is_subscribed: bool = False) -> None:
-        color = CATEGORY_COLORS.get(item.category, "white")
-        date_str = item.published.strftime("%a %b %d")
-        score = f" [dim]|{item.score}[/]" if item.score else ""
-        title = item.title.strip()
-        if len(title) > 100:
-            title = title[:97] + "..."
-        star = "[gold1]*[/] " if is_subscribed else ""
-        label = f"{star}[{color}]{_esc(title)}[/]\n  [dim]{_esc(item.source)} | {date_str}{score}[/]"
-        super().__init__(Label(label))
+    """An item row with info label + Open button."""
+
+    def __init__(self, item: Item, idx: int, is_subscribed: bool = False) -> None:
         self.item = item
+        self.idx = idx
+        self._is_sub = is_subscribed
+        super().__init__()
+
+    def compose(self) -> ComposeResult:
+        it = self.item
+        color = CATEGORY_COLORS.get(it.category, "white")
+        date_str = it.published.strftime("%a %b %d")
+        score = f" | {it.score}pts" if it.score else ""
+        title = it.title.strip()
+        if len(title) > 90:
+            title = title[:87] + "..."
+        star = "[gold1]*[/] " if self._is_sub else ""
+        with Horizontal(classes="news-row"):
+            yield Label(
+                f"{star}[{color}]{_esc(title)}[/]\n"
+                f"  [dim]{_esc(it.source)} | {date_str}{score}[/]",
+                classes="news-label",
+            )
+            yield Button("Open", id=f"open-{self.idx}", classes="news-open-btn")
 
 
 class ClankerApp(App):
@@ -83,30 +90,29 @@ class ClankerApp(App):
     Screen { layout: vertical; }
 
     #toolbar {
-        height: 3;
-        padding: 0 1;
+        height: auto;
+        max-height: 5;
+        padding: 1 2;
         border: solid $accent;
         layout: horizontal;
-        align: left middle;
     }
-    .toolbar-label {
+    .toolbar-section {
         width: auto;
+        height: auto;
+        layout: horizontal;
         padding: 0 1;
-        content-align: center middle;
-        text-style: bold;
     }
-    #input-from, #input-to {
-        width: 16;
+    .range-btn {
+        min-width: 8;
+        margin: 0 0 0 1;
     }
-    #btn-apply {
-        width: auto;
-        min-width: 10;
-        margin: 0 1;
+    .range-btn-active {
+        min-width: 8;
+        margin: 0 0 0 1;
     }
     #btn-rescrape {
-        width: auto;
         min-width: 14;
-        margin: 0 1;
+        margin: 0 0 0 2;
     }
     #scrape-indicator {
         width: 1fr;
@@ -124,13 +130,26 @@ class ClankerApp(App):
         border: solid $accent;
     }
 
+    .news-row {
+        width: 100%;
+        height: auto;
+        layout: horizontal;
+    }
+    .news-label {
+        width: 1fr;
+    }
+    .news-open-btn {
+        width: auto;
+        min-width: 8;
+        margin: 0 0 0 1;
+    }
+
     #preview {
-        height: 16;
+        height: 14;
         border: solid $accent;
         padding: 1 2;
     }
     #preview-inner { height: auto; }
-
     .preview-label {
         color: $accent;
         text-style: bold;
@@ -172,13 +191,15 @@ class ClankerApp(App):
     ) -> None:
         super().__init__()
         self._initial_days = days
+        self._active_range = days
         self._date_end: date = date.today()
         self._date_start: date = self._date_end - timedelta(days=days)
         self.fetch_sources = sources
         self.summaries = dict(summaries)
         self.subscriptions: set[str] = db.get_subscriptions()
         self.groups: dict[str, list[Item]] = defaultdict(list)
-        self._all_items: dict[str, Item] = {}  # url -> Item
+        self._all_items: dict[str, Item] = {}
+        self._current_items_list: list[Item] = []  # indexed for Open button lookup
         self._active_category: str = ""
         self.current_item: Item | None = None
         self._fetch_done = False
@@ -226,27 +247,20 @@ class ClankerApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="toolbar"):
-            yield Label("From", classes="toolbar-label")
-            yield Input(
-                value=self._date_start.strftime("%Y-%m-%d"),
-                placeholder="YYYY-MM-DD",
-                id="input-from",
-            )
-            yield Label("To", classes="toolbar-label")
-            yield Input(
-                value=self._date_end.strftime("%Y-%m-%d"),
-                placeholder="YYYY-MM-DD",
-                id="input-to",
-            )
-            yield Button("Apply", id="btn-apply", variant="primary")
-            yield Button("Re-scrape", id="btn-rescrape", variant="warning")
+            with Horizontal(classes="toolbar-section"):
+                yield Label("[bold]Range:[/] ", classes="toolbar-label")
+                yield Button("3 days", id="range-3", classes="range-btn")
+                yield Button("7 days", id="range-7", classes="range-btn")
+                yield Button("14 days", id="range-14", classes="range-btn")
+                yield Button("30 days", id="range-30", classes="range-btn")
+            yield Button("Re-scrape", id="btn-rescrape")
             yield Static("", id="scrape-indicator")
         with Horizontal(id="main"):
             with Vertical(id="sidebar"):
                 yield Label("[bold]Categories[/]", id="sidebar-label")
                 yield ListView(id="cat-list")
             with Vertical(id="middle"):
-                yield Label("[bold]Items[/]  [dim]Enter = open link | o = open link[/]", id="items-label")
+                yield Label("[bold]Items[/]  [dim]o = open link | f = follow source[/]", id="items-label")
                 yield ListView(id="item-list")
         with VerticalScroll(id="preview"):
             with Vertical(id="preview-inner"):
@@ -262,43 +276,38 @@ class ClankerApp(App):
 
     def on_mount(self) -> None:
         self.title = "CLANKERNEWSDUMP"
+        self._highlight_active_range()
         self._refresh_scrape_indicator()
         self._refresh_categories()
         self._update_status()
         self._kick_off_fetch()
 
-    # ---------- toolbar: date range ----------
+    # ---------- toolbar ----------
 
-    def _apply_date_range(self) -> None:
-        raw_from = self.query_one("#input-from", Input).value.strip()
-        raw_to = self.query_one("#input-to", Input).value.strip()
-        try:
-            new_start = date.fromisoformat(raw_from)
-            new_end = date.fromisoformat(raw_to)
-        except ValueError:
-            self.notify("Invalid date format. Use YYYY-MM-DD.", severity="error")
-            return
-        if new_start > new_end:
-            self.notify("From date must be before To date.", severity="error")
-            return
-        if (new_end - new_start).days > 90:
-            self.notify("Max range is 90 days.", severity="error")
-            return
-        self._date_start = new_start
-        self._date_end = new_end
+    def _set_date_range(self, days: int) -> None:
+        self._active_range = days
+        self._date_end = date.today()
+        self._date_start = self._date_end - timedelta(days=days)
         # reload from DB for new range
         cached = db.load_items_in_range(self._date_start, self._date_end)
-        new_urls = {it.url for it in cached}
         for it in cached:
             if it.url not in self._all_items:
                 self._all_items[it.url] = it
         self._rebuild_groups()
+        self._highlight_active_range()
         self._refresh_scrape_indicator()
         self._refresh_categories()
         if self._active_category:
             self._refresh_item_list()
         self._update_sub_title()
-        self.notify(f"Date range: {new_start} to {new_end}")
+
+    def _highlight_active_range(self) -> None:
+        for days in (3, 7, 14, 30):
+            btn = self.query_one(f"#range-{days}", Button)
+            if days == self._active_range:
+                btn.variant = "primary"
+            else:
+                btn.variant = "default"
 
     def _refresh_scrape_indicator(self) -> None:
         data_dates = db.dates_with_items(self._date_start, self._date_end)
@@ -315,8 +324,10 @@ class ClankerApp(App):
         indicator = "".join(chars)
         has_count = len(data_dates)
         total_days = (self._date_end - self._date_start).days + 1
-        legend = f"  {has_count}/{total_days}d  [dim]([/][green]*[/][dim]=data [/][yellow]~[/][dim]=today [/][dim].=empty)[/]"
-        self.query_one("#scrape-indicator", Static).update(f"{indicator}{legend}")
+        self.query_one("#scrape-indicator", Static).update(
+            f"{indicator}  {has_count}/{total_days}d  "
+            f"[dim]([/][green]*[/][dim]=data [/][yellow]~[/][dim]=today [/][dim].=empty)[/]"
+        )
 
     # ---------- background fetch ----------
 
@@ -334,7 +345,7 @@ class ClankerApp(App):
         new_total = 0
         days = (self._date_end - self._date_start).days
         for label, i, total, items in fetch_incrementally(days, self.fetch_sources):
-            status = f"Fetching: {label} ({i}/{total})"
+            status = f"Fetching: {_esc(label)} ({i}/{total})"
             self.call_from_thread(self._update_status_text, status)
             if items:
                 inserted = db.upsert_items(items)
@@ -413,14 +424,16 @@ class ClankerApp(App):
         self._refresh_item_list()
 
     def _refresh_item_list(self) -> None:
-        current_items = self.groups.get(self._active_category, [])
+        self._current_items_list = list(self.groups.get(self._active_category, []))
         item_list = self.query_one("#item-list", ListView)
         item_list.clear()
-        for it in current_items:
-            item_list.append(NewsItem(it, is_subscribed=(it.source in self.subscriptions)))
-        if current_items:
+        for idx, it in enumerate(self._current_items_list):
+            item_list.append(
+                NewsItem(it, idx=idx, is_subscribed=(it.source in self.subscriptions))
+            )
+        if self._current_items_list:
             item_list.index = 0
-            self._show_item(current_items[0])
+            self._show_item(self._current_items_list[0])
         else:
             self._clear_preview()
 
@@ -439,7 +452,6 @@ class ClankerApp(App):
         self.query_one("#preview-meta-val", Static).update(
             RichText(f"{item.source}{sub_tag}  |  {date_str}{score}", style="dim")
         )
-
         summary = self.summaries.get(item.url, "")
         if summary:
             self.query_one("#preview-summary-val", Static).update(RichText(summary))
@@ -494,21 +506,35 @@ class ClankerApp(App):
             self._load_category(event.item.cat)
             self.query_one("#item-list", ListView).focus()
         elif isinstance(event.item, NewsItem):
-            # Enter on an item opens it in the browser
+            # selecting an item just updates preview, does NOT open browser
             self._show_item(event.item.item)
-            self.action_open_link()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-apply":
-            self._apply_date_range()
-        elif event.button.id == "btn-rescrape":
-            self._apply_date_range()  # apply dates first
+        btn_id = event.button.id or ""
+        # Range buttons
+        if btn_id.startswith("range-"):
+            try:
+                days = int(btn_id.split("-")[1])
+                self._set_date_range(days)
+                self.notify(f"Showing last {days} days")
+            except (ValueError, IndexError):
+                pass
+            return
+        # Re-scrape
+        if btn_id == "btn-rescrape":
             self._kick_off_fetch()
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        # pressing Enter in a date input applies the range
-        if event.input.id in ("input-from", "input-to"):
-            self._apply_date_range()
+            return
+        # Open buttons on item rows
+        if btn_id.startswith("open-"):
+            try:
+                idx = int(btn_id.split("-")[1])
+                if 0 <= idx < len(self._current_items_list):
+                    item = self._current_items_list[idx]
+                    webbrowser.open(item.url)
+                    self.notify(f"Opened: {item.title[:60]}")
+            except (ValueError, IndexError):
+                pass
+            return
 
     def action_open_link(self) -> None:
         if self.current_item and self.current_item.url:
