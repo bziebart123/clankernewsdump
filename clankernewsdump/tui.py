@@ -90,32 +90,32 @@ class ClankerApp(App):
     Screen { layout: vertical; }
 
     #toolbar {
-        height: auto;
-        max-height: 5;
-        padding: 1 2;
+        height: 5;
+        padding: 0 1;
         border: solid $accent;
         layout: horizontal;
+        align: left middle;
     }
-    .toolbar-section {
+    #toolbar-range-label {
         width: auto;
-        height: auto;
-        layout: horizontal;
         padding: 0 1;
+        content-align: center middle;
+        text-style: bold;
+        height: 3;
     }
     .range-btn {
-        min-width: 8;
-        margin: 0 0 0 1;
-    }
-    .range-btn-active {
-        min-width: 8;
+        width: 12;
+        height: 3;
         margin: 0 0 0 1;
     }
     #btn-rescrape {
-        min-width: 14;
+        width: 16;
+        height: 3;
         margin: 0 0 0 2;
     }
     #scrape-indicator {
         width: 1fr;
+        height: 3;
         content-align: right middle;
         padding: 0 1;
     }
@@ -134,14 +134,15 @@ class ClankerApp(App):
         width: 100%;
         height: auto;
         layout: horizontal;
+        align: left middle;
     }
     .news-label {
         width: 1fr;
     }
     .news-open-btn {
-        width: auto;
-        min-width: 8;
-        margin: 0 0 0 1;
+        width: 10;
+        height: 3;
+        margin: 0 1;
     }
 
     #preview {
@@ -247,12 +248,11 @@ class ClankerApp(App):
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Horizontal(id="toolbar"):
-            with Horizontal(classes="toolbar-section"):
-                yield Label("[bold]Range:[/] ", classes="toolbar-label")
-                yield Button("3 days", id="range-3", classes="range-btn")
-                yield Button("7 days", id="range-7", classes="range-btn")
-                yield Button("14 days", id="range-14", classes="range-btn")
-                yield Button("30 days", id="range-30", classes="range-btn")
+            yield Label("Range:", id="toolbar-range-label")
+            yield Button("3 days", id="range-3", classes="range-btn")
+            yield Button("7 days", id="range-7", classes="range-btn")
+            yield Button("14 days", id="range-14", classes="range-btn")
+            yield Button("30 days", id="range-30", classes="range-btn")
             yield Button("Re-scrape", id="btn-rescrape")
             yield Static("", id="scrape-indicator")
         with Horizontal(id="main"):
