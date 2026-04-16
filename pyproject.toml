@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "clankernewsdump"
+version = "0.1.0"
+description = "Dump the latest bleeding-edge AI news to your terminal, color-coded."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40.0",
+    "feedparser>=6.0.11",
+    "httpx>=0.27.0",
+    "rich>=13.7.0",
+    "python-dateutil>=2.9.0",
+    "textual>=0.80.0",
+]
+
+[project.scripts]
+clankernewsdump = "clankernewsdump.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["clankernewsdump*"]
