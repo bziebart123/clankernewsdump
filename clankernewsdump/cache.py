@@ -1,4 +1,4 @@
-"""SQLite cache for items, summaries, subscriptions, and scrape tracking."""
+"""SQLite cache for items, summaries, subscriptions, bookmarks, read state, and scrape tracking."""
 from __future__ import annotations
 
 import sqlite3
@@ -33,6 +33,7 @@ def _conn() -> sqlite3.Connection:
         )"""
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_items_published ON items(published)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_items_category ON items(category)")
     conn.execute(
         """CREATE TABLE IF NOT EXISTS subscriptions (
             source_name TEXT PRIMARY KEY,
@@ -47,6 +48,27 @@ def _conn() -> sqlite3.Connection:
             PRIMARY KEY (scrape_date)
         )"""
     )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS bookmarks (
+            url TEXT PRIMARY KEY,
+            added_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS read_items (
+            url TEXT PRIMARY KEY,
+            read_at TEXT NOT NULL
+        )"""
+    )
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS custom_sources (
+            name TEXT NOT NULL,
+            url TEXT PRIMARY KEY,
+            category TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'rss',
+            added_at TEXT NOT NULL
+        )"""
+    )
     return conn
 
 
@@ -59,11 +81,22 @@ def get_summary(url: str) -> str | None:
         return row[0] if row else None
 
 
+def get_all_summaries(urls: list[str]) -> dict[str, str]:
+    if not urls:
+        return {}
+    with _conn() as c:
+        placeholders = ",".join("?" * len(urls))
+        rows = c.execute(
+            f"SELECT url, summary FROM summaries WHERE url IN ({placeholders})", urls
+        ).fetchall()
+    return {url: summary for url, summary in rows}
+
+
 def put_summary(url: str, summary: str) -> None:
     with _conn() as c:
         c.execute(
             "INSERT OR REPLACE INTO summaries (url, summary, created_at) VALUES (?, ?, ?)",
-            (url, summary, datetime.utcnow().isoformat()),
+            (url, summary, datetime.now(timezone.utc).isoformat()),
         )
 
 
@@ -153,13 +186,140 @@ def remove_subscription(source_name: str) -> None:
 
 
 def toggle_subscription(source_name: str) -> bool:
-    """Toggle and return True if now subscribed, False if unsubscribed."""
     subs = get_subscriptions()
     if source_name in subs:
         remove_subscription(source_name)
         return False
     add_subscription(source_name)
     return True
+
+
+# ---------- bookmarks ----------
+
+
+def get_bookmarks() -> set[str]:
+    with _conn() as c:
+        rows = c.execute("SELECT url FROM bookmarks").fetchall()
+    return {r[0] for r in rows}
+
+
+def add_bookmark(url: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO bookmarks (url, added_at) VALUES (?, ?)",
+            (url, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def remove_bookmark(url: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM bookmarks WHERE url = ?", (url,))
+
+
+def toggle_bookmark(url: str) -> bool:
+    bookmarks = get_bookmarks()
+    if url in bookmarks:
+        remove_bookmark(url)
+        return False
+    add_bookmark(url)
+    return True
+
+
+def get_bookmarked_items() -> list[Item]:
+    with _conn() as c:
+        rows = c.execute(
+            """SELECT i.source, i.category, i.title, i.url, i.published, i.snippet, i.score
+            FROM items i INNER JOIN bookmarks b ON i.url = b.url
+            ORDER BY b.added_at DESC"""
+        ).fetchall()
+    out: list[Item] = []
+    for source, category, title, url, published, snippet, score in rows:
+        try:
+            pub = datetime.fromisoformat(published)
+        except ValueError:
+            continue
+        out.append(Item(source=source, category=category, title=title, url=url,
+                        published=pub, snippet=snippet or "", score=score or 0))
+    return out
+
+
+# ---------- read/unread ----------
+
+
+def get_read_urls() -> set[str]:
+    with _conn() as c:
+        rows = c.execute("SELECT url FROM read_items").fetchall()
+    return {r[0] for r in rows}
+
+
+def mark_read(url: str) -> None:
+    with _conn() as c:
+        c.execute(
+            "INSERT OR IGNORE INTO read_items (url, read_at) VALUES (?, ?)",
+            (url, datetime.now(timezone.utc).isoformat()),
+        )
+
+
+def mark_unread(url: str) -> None:
+    with _conn() as c:
+        c.execute("DELETE FROM read_items WHERE url = ?", (url,))
+
+
+# ---------- custom sources ----------
+
+
+def get_custom_feeds() -> list[tuple[str, str, str]]:
+    """Return list of (name, url, category) for custom RSS feeds."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT name, url, category FROM custom_sources WHERE source_type = 'rss' ORDER BY name"
+        ).fetchall()
+    return [(name, url, cat) for name, url, cat in rows]
+
+
+def get_custom_subreddits() -> list[str]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT name FROM custom_sources WHERE source_type = 'subreddit' ORDER BY name"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def get_custom_hn_queries() -> list[str]:
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT name FROM custom_sources WHERE source_type = 'hn_query' ORDER BY name"
+        ).fetchall()
+    return [r[0] for r in rows]
+
+
+def add_custom_source(name: str, url: str, category: str, source_type: str = "rss") -> bool:
+    """Add a custom source. Returns True if newly added, False if already exists."""
+    with _conn() as c:
+        cur = c.execute(
+            "INSERT OR IGNORE INTO custom_sources (name, url, category, source_type, added_at) VALUES (?, ?, ?, ?, ?)",
+            (name, url, category, source_type, datetime.now(timezone.utc).isoformat()),
+        )
+        return cur.rowcount > 0
+
+
+def remove_custom_source(url_or_name: str) -> bool:
+    """Remove a custom source by URL or name. Returns True if removed."""
+    with _conn() as c:
+        cur = c.execute(
+            "DELETE FROM custom_sources WHERE url = ? OR name = ?",
+            (url_or_name, url_or_name),
+        )
+        return cur.rowcount > 0
+
+
+def get_all_custom_sources() -> list[dict]:
+    """Return all custom sources as dicts."""
+    with _conn() as c:
+        rows = c.execute(
+            "SELECT name, url, category, source_type, added_at FROM custom_sources ORDER BY source_type, name"
+        ).fetchall()
+    return [{"name": n, "url": u, "category": c, "type": t, "added_at": a} for n, u, c, t, a in rows]
 
 
 # ---------- scrape log ----------
@@ -174,7 +334,6 @@ def log_scrape(scrape_date: date, item_count: int) -> None:
 
 
 def get_scraped_dates() -> dict[date, int]:
-    """Return {date: item_count} for all scraped dates."""
     with _conn() as c:
         rows = c.execute("SELECT scrape_date, item_count FROM scrape_log").fetchall()
     out: dict[date, int] = {}
@@ -187,7 +346,6 @@ def get_scraped_dates() -> dict[date, int]:
 
 
 def dates_with_items(start: date, end: date) -> set[date]:
-    """Return set of dates that have at least one item in the DB."""
     start_iso = datetime(start.year, start.month, start.day, tzinfo=timezone.utc).isoformat()
     end_iso = datetime(end.year, end.month, end.day, 23, 59, 59, tzinfo=timezone.utc).isoformat()
     with _conn() as c:
