@@ -6,7 +6,6 @@ read/unread tracking, dark theme, responsive layout.
 """
 from __future__ import annotations
 
-import html
 import json
 from collections import defaultdict
 from datetime import date
@@ -33,23 +32,23 @@ def _group(items: list[Item], subscriptions: set[str]) -> dict[str, list[Item]]:
     return dict(groups)
 
 
-def _items_to_json(items: list[Item], summaries: dict[str, str],
-                   bookmarks: set[str], read_urls: set[str]) -> str:
+def _items_to_json_records(items: list[Item], summaries: dict[str, str],
+                           bookmarks: set[str], read_urls: set[str]) -> list[dict]:
     records = []
     for it in items:
         records.append({
-            "t": html.escape(it.title),
+            "t": it.title,
             "u": it.url,
-            "s": html.escape(it.source),
+            "s": it.source,
             "c": it.category,
             "d": it.published.strftime("%Y-%m-%dT%H:%M:%S"),
             "ds": it.published.strftime("%a %b %d"),
             "sc": it.score,
-            "sm": html.escape(summaries.get(it.url, "")),
+            "sm": summaries.get(it.url, ""),
             "b": it.url in bookmarks,
             "r": it.url in read_urls,
         })
-    return json.dumps(records, ensure_ascii=False)
+    return records
 
 
 def generate_html(
@@ -87,9 +86,15 @@ def generate_html(
                 seen.add(it.url)
                 all_items.append(it)
 
-    items_json = _items_to_json(all_items, summaries, bookmarks, read_urls)
-    cats_json = json.dumps(cat_tabs, ensure_ascii=False)
-    custom_sources_json = json.dumps(custom_sources, ensure_ascii=False)
+    def _safe_json(obj: object) -> str:
+        """Serialize to JSON safe for embedding in <script> tags."""
+        s = json.dumps(obj, ensure_ascii=False)
+        # Prevent </script> breakout and HTML comment injection
+        return s.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+    items_json = _safe_json(_items_to_json_records(all_items, summaries, bookmarks, read_urls))
+    cats_json = _safe_json(cat_tabs)
+    custom_sources_json = _safe_json(custom_sources)
     gen_date = date.today().strftime("%B %d, %Y")
 
     return f"""<!DOCTYPE html>
@@ -379,6 +384,19 @@ const ALL_ITEMS = {items_json};
 const CATEGORIES = {cats_json};
 const CUSTOM_SOURCES = {custom_sources_json};
 
+// HTML escaping — applied when interpolating data into innerHTML
+function esc(s) {{
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+}}
+// Only allow http/https URLs in href attributes to prevent javascript: XSS
+function safeHref(url) {{
+  if (!url) return '';
+  const u = String(url).trim();
+  if (/^https?:\/\//i.test(u)) return esc(u);
+  return '';
+}}
+
 // State
 let activeCat = 'all';
 let searchQuery = '';
@@ -522,22 +540,22 @@ function renderFeed() {{
     const cat = CATEGORIES.find(c => c.id === item.c);
     const color = cat ? cat.color : '#888';
     const label = cat ? cat.label : item.c;
-    return `<div class="item ${{isRead?'read':''}} ${{idx===focusedIdx?'focused':''}}" data-idx="${{idx}}" data-url="${{item.u}}">` +
+    return `<div class="item ${{isRead?'read':''}} ${{idx===focusedIdx?'focused':''}}" data-idx="${{idx}}" data-url="${{esc(item.u)}}">` +
       `<div class="item-row">` +
         `<div class="item-body">` +
-          `<div class="item-title"><a href="${{item.u}}" target="_blank" rel="noopener" data-url="${{item.u}}">${{item.t}}</a></div>` +
+          `<div class="item-title"><a href="${{safeHref(item.u)}}" target="_blank" rel="noopener" data-url="${{esc(item.u)}}">${{esc(item.t)}}</a></div>` +
           `<div class="item-meta">` +
-            `<span class="badge" style="color:${{color}};border-color:${{color}}">${{label}}</span>` +
-            `<span class="source-name">${{item.s}}</span>` +
+            `<span class="badge" style="color:${{color}};border-color:${{color}}">${{esc(label)}}</span>` +
+            `<span class="source-name">${{esc(item.s)}}</span>` +
             `<span class="sep">&middot;</span>` +
             `<span class="time-ago">${{timeAgo(item.d)}}</span>` +
             (item.sc ? `<span class="sep">&middot;</span><span class="score-badge">${{item.sc.toLocaleString()}} pts</span>` : '') +
           `</div>` +
-          (item.sm ? `<div class="item-summary">${{item.sm}}</div>` : '') +
+          (item.sm ? `<div class="item-summary">${{esc(item.sm)}}</div>` : '') +
         `</div>` +
         `<div class="item-actions">` +
-          `<div class="act ${{isBm?'on-bookmark':''}}" data-action="bookmark" data-url="${{item.u}}" title="Bookmark">&#9733;</div>` +
-          `<div class="act ${{isRead?'on-read':''}}" data-action="read" data-url="${{item.u}}" title="Mark read/unread">&#10003;</div>` +
+          `<div class="act ${{isBm?'on-bookmark':''}}" data-action="bookmark" data-url="${{esc(item.u)}}" title="Bookmark">&#9733;</div>` +
+          `<div class="act ${{isRead?'on-read':''}}" data-action="read" data-url="${{esc(item.u)}}" title="Mark read/unread">&#10003;</div>` +
         `</div>` +
       `</div>` +
     `</div>`;
@@ -687,33 +705,39 @@ function renderCustomSources() {{
   CUSTOM_SOURCES.forEach(s => {{
     const li = document.createElement('li');
     const tl = s.type === 'rss' ? s.category : s.type === 'subreddit' ? 'reddit' : 'hn';
-    li.innerHTML = `<span class="sn">${{s.name}}</span><span class="sm">${{tl}}${{s.type==='rss'?' — '+s.url:''}}</span>` +
-      `<button class="sr" data-name="${{s.name}}">&times;</button>`;
+    li.innerHTML = `<span class="sn">${{esc(s.name)}}</span><span class="sm">${{esc(tl)}}${{s.type==='rss'?' — '+esc(s.url):''}}</span>` +
+      `<button class="sr" data-name="${{esc(s.name)}}">&times;</button>`;
     list.appendChild(li);
   }});
   list.querySelectorAll('.sr').forEach(btn => {{
     btn.addEventListener('click', () => showCmd(`clankernewsdump remove-source "${{btn.dataset.name}}"`));
   }});
 }}
+// Sanitize input for display in CLI commands (strip shell metacharacters)
+function shellSafe(s) {{
+  return s.replace(/[`$\\!"';&|<>(){{}}]/g, '');
+}}
 document.getElementById('btn-add-feed').addEventListener('click', () => {{
   const n = document.getElementById('feed-name').value.trim();
   const u = document.getElementById('feed-url').value.trim();
   const c = document.getElementById('feed-cat').value;
   if (!n || !u) return;
-  showCmd(`clankernewsdump add-feed "${{n}}" "${{u}}" ${{c}}`);
+  if (!/^https?:\/\//i.test(u)) {{ alert('Feed URL must start with http:// or https://'); return; }}
+  showCmd(`clankernewsdump add-feed "${{shellSafe(n)}}" "${{shellSafe(u)}}" ${{c}}`);
   document.getElementById('feed-name').value = '';
   document.getElementById('feed-url').value = '';
 }});
 document.getElementById('btn-add-sub').addEventListener('click', () => {{
   const n = document.getElementById('sub-name').value.trim().replace('r/', '');
   if (!n) return;
-  showCmd(`clankernewsdump add-subreddit ${{n}}`);
+  if (!/^[A-Za-z0-9_]+$/.test(n)) {{ alert('Subreddit name must be alphanumeric'); return; }}
+  showCmd(`clankernewsdump add-subreddit ${{shellSafe(n)}}`);
   document.getElementById('sub-name').value = '';
 }});
 document.getElementById('btn-add-hn').addEventListener('click', () => {{
   const q = document.getElementById('hn-query').value.trim();
   if (!q) return;
-  showCmd(`clankernewsdump add-hn "${{q}}"`);
+  showCmd(`clankernewsdump add-hn "${{shellSafe(q)}}"`);
   document.getElementById('hn-query').value = '';
 }});
 

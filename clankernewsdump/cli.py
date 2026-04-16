@@ -234,8 +234,19 @@ def cmd_init(args: argparse.Namespace) -> int:
     return 0
 
 
+def _is_valid_url(url: str) -> bool:
+    """Check that a URL uses http or https scheme."""
+    return url.startswith("http://") or url.startswith("https://")
+
+
 def cmd_add_feed(args: argparse.Namespace) -> int:
     """Add a custom RSS feed."""
+    if not _is_valid_url(args.url):
+        print("Error: Feed URL must start with http:// or https://", file=sys.stderr)
+        return 1
+    if len(args.name) > 200:
+        print("Error: Feed name is too long (max 200 characters)", file=sys.stderr)
+        return 1
     added = db.add_custom_source(args.name, args.url, args.category, "rss")
     if added:
         print(f"Added feed: {args.name} ({args.category}) -> {args.url}")
@@ -246,7 +257,11 @@ def cmd_add_feed(args: argparse.Namespace) -> int:
 
 def cmd_add_subreddit(args: argparse.Namespace) -> int:
     """Add a custom subreddit."""
+    import re
     name = args.name.removeprefix("r/")
+    if not re.fullmatch(r"[A-Za-z0-9_]{1,50}", name):
+        print("Error: Subreddit name must be 1-50 alphanumeric characters or underscores", file=sys.stderr)
+        return 1
     url = f"https://www.reddit.com/r/{name}"
     added = db.add_custom_source(name, url, "reddit", "subreddit")
     if added:
@@ -258,12 +273,16 @@ def cmd_add_subreddit(args: argparse.Namespace) -> int:
 
 def cmd_add_hn(args: argparse.Namespace) -> int:
     """Add a custom HN search query."""
-    url = f"hn:{args.query}"
-    added = db.add_custom_source(args.query, url, "hn", "hn_query")
+    query = args.query.strip()
+    if not query or len(query) > 200:
+        print("Error: Query must be 1-200 characters", file=sys.stderr)
+        return 1
+    url = f"hn:{query}"
+    added = db.add_custom_source(query, url, "hn", "hn_query")
     if added:
-        print(f"Added HN query: {args.query}")
+        print(f"Added HN query: {query}")
     else:
-        print(f"HN query already exists: {args.query}")
+        print(f"HN query already exists: {query}")
     return 0
 
 

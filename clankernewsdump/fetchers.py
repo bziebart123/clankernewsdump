@@ -28,7 +28,7 @@ from .sources import (
 
 log = logging.getLogger("clankernewsdump")
 
-UA = "clankernewsdump/0.2 (+https://github.com/brianziebart)"
+UA = "clankernewsdump/0.2 (+https://github.com/bziebart123/clankernewsdump)"
 HEADERS = {"User-Agent": UA}
 
 # In-memory HTTP cache: url → {"etag": ..., "last_modified": ..., "content": bytes}

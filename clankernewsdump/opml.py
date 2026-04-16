@@ -50,14 +50,22 @@ def import_opml(path: str | Path) -> list[dict[str, str]]:
     root = tree.getroot()
     feeds: list[dict[str, str]] = []
 
+    valid_categories = {"blog", "newsletter", "lab", "podcast", "news"}
+
     def _walk(element: ET.Element, parent_cat: str = "blog"):
         for outline in element.findall("outline"):
             xml_url = outline.get("xmlUrl")
             if xml_url:
+                # Only accept http/https URLs
+                if not (xml_url.startswith("http://") or xml_url.startswith("https://")):
+                    continue
+                raw_cat = outline.get("category") or parent_cat
+                category = raw_cat if raw_cat in valid_categories else "blog"
+                name = (outline.get("title") or outline.get("text") or "Untitled")[:200]
                 feeds.append({
-                    "name": outline.get("title") or outline.get("text") or "Untitled",
+                    "name": name,
                     "url": xml_url,
-                    "category": outline.get("category") or parent_cat,
+                    "category": category,
                 })
             else:
                 # Folder node — use its text as category hint
